@@ -168,7 +168,7 @@ def _placeholder_seg(i: int, product_name: str, ingredients: str) -> dict[str, A
 # 세분화 1~6 각각에 대응하는 법률 패턴.
 # 자리표시자: {제품명}, {key_list}  (key_list 는 이미 ', '.join(["'X'",...]) 형태)
 _LAW_PATTERNS: list[str] = [
-    # seg_1 — 원재료명/성분명
+    # seg_1 — 원재료명
     "제품명 '{제품명}'에 원재료명에 해당하는 {key_list} 명칭이 포함되었으므로 {key_list}의 명칭과 함량(백분율, 중량, 용량)을 주표시면에 14포인트 이상의 글씨로 표시하여야 한다. 다만, 제품명의 글씨크기가 22포인트 미만인 경우에는 7포인트 이상의 글씨로 표시할 수 있다.",
     # seg_2 — 통칭명(C)
     "제품명 '{제품명}'에 통칭명에 해당하는 {key_list} 명칭이 포함되었으므로 {key_list}의 명칭과 함량을 주표시면에 14포인트 이상의 글씨로 표시하여야 한다. 다만, 제품명의 글씨크기가 22포인트 미만인 경우에는 7포인트 이상의 글씨로 표시할 수 있다.",
@@ -220,6 +220,28 @@ def _span(text: str, color: str, bold: bool = True) -> str:
 def _format_keys_md(items: list[str], color: str = "#0d6efd") -> str:
     """키워드 목록을 색상 bold span으로 포맷."""
     return ", ".join(_span(f"'{v}'", color) for v in items)
+
+
+def _josa_eun_neun(word: str) -> str:
+    """마지막 글자의 받침 유무에 따라 '은' 또는 '는' 반환."""
+    if not word:
+        return "은"
+    last = word[-1]
+    code = ord(last)
+    if 0xAC00 <= code <= 0xD7A3:
+        return "은" if (code - 0xAC00) % 28 != 0 else "는"
+    return "은"
+
+
+# 세분화 인덱스(0~5)별 명칭 유형 레이블
+_SEG_TYPE_LABELS: list[str] = [
+    "원재료 명칭",                                                         # seg_1
+    "통칭명",                                                              # seg_2
+    "식품유형명/즉석섭취·편의식품류명/요리명",                               # seg_3
+    "추출물/농축액 명칭",                                                   # seg_4
+    "성분명",                                                              # seg_5
+    '"맛" 또는 "향"을 내기 위하여 사용한 향료의(합성향료) 명칭',              # seg_6
+]
 
 
 def _parse_ingredients(ingredients: str) -> list[str]:
@@ -288,65 +310,142 @@ def _match_real(keywords: list[str], ingredient_tokens: list[str]) -> list[str]:
 
 
 def _build_text_1(product_name: str, seg_results: list[dict[str, Any]]) -> str:
-    applicable_any = any(r.get("result") == "해당" for r in seg_results)
-    product_name_formatted = _format_keys_md([product_name], "#170678")
-
-    if not applicable_any:
-        return f"제품명 '{product_name_formatted}'에는 함량 표시 대상 명칭이 포함되어 있지 않습니다."
-    all_keys: list[str] = []
-    for r in seg_results:
-        all_keys.extend(_split_list(r.get("keyword_list")))
-    key_list = _format_keys_md(_dedupe_ordered(all_keys))
-    return f"제품명 '{product_name_formatted}'에는 {key_list}라는 함량 표시 대상 명칭이 포함되어 있습니다."
-
-
-def _build_text_2(product_name: str, seg_results: list[dict[str, Any]]) -> str:
-    applicable: list[tuple[int, dict[str, Any]]] = [
-        (i, r) for i, r in enumerate(seg_results) if r.get("result") == "해당"
+    """1번: 제품명 구성에 따른 주표시면 함량 표시 대상 여부 확인."""
+    seg_keys: list[list[str]] = [
+        _dedupe_ordered(_split_list(r.get("keyword_list")))
+        if r.get("result") == "해당" else []
+        for r in seg_results
     ]
-    if not applicable:
+
+    # seg_4(index 3)가 seg_1(index 0)에 우선 — 같은 키워드는 seg_4로만 표시
+    seg4_set = set(seg_keys[3])
+    seg_keys[0] = [k for k in seg_keys[0] if k not in seg4_set]
+
+    pname_span = _span(product_name, "#170678")
+    lines: list[str] = []
+
+    # 주표시면 함량 표시 대상 명칭 (seg_1, seg_2, seg_4, seg_5, seg_6)
+    for idx in [0, 1, 3, 4, 5]:
+        for kw in seg_keys[idx]:
+            kw_span = _format_keys_md([kw])
+            label = _SEG_TYPE_LABELS[idx]
+            particle = _josa_eun_neun(kw)
+            lines.append(
+                f'제품명 "{pname_span}"에 포함된 {kw_span}{particle} {label}으로 주표시면 함량 표시 대상입니다.'
+            )
+
+    # 주표시면 함량 표시 대상이 아닌 명칭 (seg_3)
+    for kw in seg_keys[2]:
+        kw_span = _format_keys_md([kw])
+        label = _SEG_TYPE_LABELS[2]
+        particle = _josa_eun_neun(kw)
+        lines.append(
+            f'제품명 "{pname_span}"에 포함된 {kw_span}{particle} {label}으로 주표시면 함량 표시 대상이 아닙니다.'
+        )
+
+    if not lines:
+        return f"제품명 '{pname_span}'에는 주표시면 함량 표시 대상 명칭이 포함되어 있지 않습니다."
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def _build_text_2(seg_results: list[dict[str, Any]]) -> str:
+    """2번: 원재료명 필드 확인 — 세분화별 분리 분석 (seg_3 제외, seg_4 우선)."""
+    _FIELD_LABELS: list[str | None] = [
+        "원재료 명칭",
+        "통칭명",
+        None,  # seg_3 제외
+        "추출물/농축액 명칭",
+        "성분명",
+        '"맛" 또는 "향"을 내기 위하여 사용한 향료의(합성향료) 명칭',
+    ]
+
+    seg4_set: set[str] = (
+        set(_split_list(seg_results[3].get("keyword_list")))
+        if len(seg_results) > 3 and seg_results[3].get("result") == "해당"
+        else set()
+    )
+
+    lines: list[str] = []
+    for idx in [0, 3, 1, 4, 5]:
+        r = seg_results[idx] if idx < len(seg_results) else {}
+        if r.get("result") != "해당":
+            continue
+
+        type_label = _FIELD_LABELS[idx]
+        all_keys = _dedupe_ordered(_split_list(r.get("keyword_list")))
+        err_keys = _dedupe_ordered(_split_list(r.get("err_keyword_list")))
+        passed_keys = _dedupe_ordered(_split_list(r.get("passed_list")))
+
+        # seg_4 우선: seg_1에서 seg_4와 겹치는 키워드 제거
+        if idx == 0:
+            all_keys = [k for k in all_keys if k not in seg4_set]
+            err_keys = [k for k in err_keys if k not in seg4_set]
+            if not all_keys and not err_keys:
+                continue
+
+        pass_keys = [k for k in all_keys if k not in set(err_keys)]
+
+        if pass_keys:
+            pass_colored = _format_keys_md(pass_keys, '#198754')
+            passed_colored = _format_keys_md(passed_keys, '#198754')
+            particle = _josa_eun_neun(pass_keys[-1])
+            if err_keys:
+                err_colored = _format_keys_md(err_keys, '#dc3545')
+                err_particle = _josa_eun_neun(err_keys[-1])
+                lines.append(
+                    f"{type_label}인 {pass_colored}{particle} 원재료명 필드에 "
+                    f"{passed_colored}의 형식으로 표시되어 있지만, "
+                    f"{err_colored}{err_particle} 포함되어 있지 않습니다."
+                )
+            else:
+                lines.append(
+                    f"{type_label}인 {pass_colored}{particle} 원재료명 필드에 "
+                    f"{passed_colored}의 형식으로 표시되어 있습니다."
+                )
+        elif err_keys:
+            err_colored = _format_keys_md(err_keys, '#dc3545')
+            err_particle = _josa_eun_neun(err_keys[-1])
+            lines.append(
+                f"{type_label}인 {err_colored}{err_particle} 원재료명 필드에 포함되어 있지 않습니다."
+            )
+
+    if not lines:
+        return "해당 제품명에는 원재료명 필드에서 확인해야 하는 명칭이 없습니다."
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def _build_text_3(product_name: str, seg_results: list[dict[str, Any]]) -> str:
+    """3번: 답변 분류 유형에 따른 주표시면 함량 표시 기준 안내 (모든 세분화 포함).
+
+    seg_4(추출물/농축액)가 seg_1(원재료명)에 우선 — 같은 키워드는 seg_4 법률만 표시.
+    """
+    seg4_set: set[str] = (
+        set(_split_list(seg_results[3].get("keyword_list")))
+        if len(seg_results) > 3 and seg_results[3].get("result") == "해당"
+        else set()
+    )
+
+    if not any(r.get("result") == "해당" for r in seg_results):
         return "해당 제품명에는 규정에 의해 표시해야 하는 명칭이 없습니다."
 
-    multi = len(applicable) >= 2
+    pname_colored = _span(product_name, "#170678")
     lines: list[str] = []
-    for pos, (idx, r) in enumerate(applicable, start=1):
+    for idx in [0, 3, 1, 4, 5, 2]:
+        r = seg_results[idx] if idx < len(seg_results) else {}
+        if r.get("result") != "해당":
+            continue
         keys = _dedupe_ordered(_split_list(r.get("keyword_list")))
+
+        # seg_4 우선: seg_1에서 seg_4와 겹치는 키워드 제거
+        if idx == 0:
+            keys = [k for k in keys if k not in seg4_set]
+            if not keys:
+                continue
+
         key_list = _format_keys_md(keys)
-        pname_colored = _span(product_name, "#170678")
         pattern = _LAW_PATTERNS[idx].format(제품명=pname_colored, key_list=key_list)
-        label = f"2-{pos}" if multi else "2"
-        lines.append(f"**[{label}]** {pattern}")
+        lines.append(f"- {pattern}")
     return "\n\n".join(lines)
-
-
-def _build_text_3(ingredients: str, seg_results: list[dict[str, Any]]) -> str:
-    all_kws: list[str] = []
-    err_all: list[str] = []
-    passed_in_input_all: list[str] = []
-    for r in seg_results:
-        all_kws.extend(_split_list(r.get("keyword_list")))
-        err_all.extend(_split_list(r.get("err_keyword_list")))
-        passed_in_input_all.extend(_split_list(r.get("passed_list")))
-
-    all_kws = _dedupe_ordered(all_kws)
-    passed_in_input_all = _dedupe_ordered(passed_in_input_all)
-    err_all = _dedupe_ordered(err_all)
-    pass_all = [val for val in all_kws if val not in err_all]
-
-    if pass_all and err_all:
-        return (
-            f"원재료명 필드에는 {_format_keys_md(pass_all, '#198754')}에 해당하는 원재료인 "
-            f"{_format_keys_md(passed_in_input_all, '#198754')}는 포함되어 있지만, "
-            f"{_format_keys_md(err_all, '#dc3545')}에 해당하는 원재료는 포함되어 있지 않습니다."
-        )
-    elif pass_all:
-        return (
-            f"원재료명 필드에는 {_format_keys_md(pass_all, '#198754')}에 해당하는 원재료인 "
-            f"{_format_keys_md(passed_in_input_all, '#198754')}가 포함되어 있습니다."
-        )
-    elif err_all:
-        return f"원재료명 필드에는 {_format_keys_md(err_all, '#dc3545')}에 해당하는 원재료가 포함되어 있지 않습니다."
-    return "해당 제품명에는 규정에 의해 표시해야 하는 명칭이 없습니다."
 
 
 def _aggregate(
@@ -360,15 +459,18 @@ def _aggregate(
         r if isinstance(r, dict) else {"result": "해당없음"} for r in seg_results
     ]
 
-    applicable_any = any(r.get("result") == "해당" for r in normalized)
+    # 최종 판정: seg_3(식품유형명/요리명)은 면제 대상이므로 제외하고 판정
+    applicable_any = any(
+        r.get("result") == "해당" for i, r in enumerate(normalized) if i != 2
+    )
     if applicable_any:
-        judgment_html = _span("⚠️ 함량표시 해당", "#dc3545")
+        judgment_html = _span("⚠️ 주표시면 함량 표시 해당", "#dc3545")
     else:
-        judgment_html = _span("✅ 함량표시 해당없음", "#198754")
+        judgment_html = _span("✅ 주표시면 함량 표시 해당없음", "#198754")
 
     text_1 = _build_text_1(product_name, normalized)
-    text_2 = _build_text_2(product_name, normalized)
-    text_3 = _build_text_3(ingredients, normalized)
+    text_2 = _build_text_2(normalized)
+    text_3 = _build_text_3(product_name, normalized)
 
     lines: list[str] = [
         f"## 📋 분석 결과 — **'{product_name}'**",
@@ -376,15 +478,15 @@ def _aggregate(
         f"> **최종 판정:** {judgment_html}",
         "",
         "---",
-        "### 1. 개요",
+        "### 1. 제품명 구성에 따른 주표시면 함량 표시 대상 여부 확인",
         text_1,
         "",
         "---",
-        "### 2. 법률 정보",
+        "### 2. 원재료명 필드 확인",
         text_2,
         "",
         "---",
-        "### 3. 원재료 확인",
+        "### 3. 답변 분류 유형에 따른 주표시면 함량 표시 기준 안내",
         text_3,
     ]
     return "\n".join(lines)
