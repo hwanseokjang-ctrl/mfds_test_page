@@ -326,19 +326,22 @@ def _build_text_1(product_name: str, seg_results: list[dict[str, Any]]) -> str:
 
     # 주표시면 함량 표시 대상 명칭 (seg_1, seg_2, seg_4, seg_5, seg_6)
     for idx in [0, 1, 3, 4, 5]:
-        for kw in seg_keys[idx]:
-            kw_span = _format_keys_md([kw])
-            label = _SEG_TYPE_LABELS[idx]
-            particle = _josa_eun_neun(kw)
-            lines.append(
-                f'제품명 "{pname_span}"에 포함된 {kw_span}{particle} {label}으로 주표시면 함량 표시 대상입니다.'
-            )
+        keys = seg_keys[idx]
+        if not keys:
+            continue
+        kw_span = _format_keys_md(keys)
+        label = _SEG_TYPE_LABELS[idx]
+        particle = _josa_eun_neun(keys[-1])
+        lines.append(
+            f'제품명 "{pname_span}"에 포함된 {kw_span}{particle} {label}으로 주표시면 함량 표시 대상입니다.'
+        )
 
     # 주표시면 함량 표시 대상이 아닌 명칭 (seg_3)
-    for kw in seg_keys[2]:
-        kw_span = _format_keys_md([kw])
+    keys = seg_keys[2]
+    if keys:
+        kw_span = _format_keys_md(keys)
         label = _SEG_TYPE_LABELS[2]
-        particle = _josa_eun_neun(kw)
+        particle = _josa_eun_neun(keys[-1])
         lines.append(
             f'제품명 "{pname_span}"에 포함된 {kw_span}{particle} {label}으로 주표시면 함량 표시 대상이 아닙니다.'
         )
